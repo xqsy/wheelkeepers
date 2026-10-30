@@ -35,13 +35,19 @@ try{
   const home=await call('/');assert.equal(home.status,200);
   assert.match(home.text,/Wheelkeepers/);assert.doesNotMatch(home.text,/@vite\/client/);
   assert.match(home.text,/Practice Boost/);assert.match(home.text,/hamster-mark\.svg\?v=led-ears/);
-  assert.doesNotMatch(home.text,/wheelkeepers\.dev\.extension-error-filter/);
+  assert.doesNotMatch(home.text,/wheelkeepers-extension-error-filter|fonts\.googleapis\.com|fonts\.gstatic\.com/);
   const logo=await call('/hamster-mark.svg?v=led-ears');assert.equal(logo.status,200);
   assert.match(logo.headers['content-type'],/image\/svg\+xml/);
   assert.equal(logo.text,await readFile(new URL('../public/hamster-mark.svg',import.meta.url),'utf8'));
   for(const pattern of [/<script[^>]+src="([^"]+)"/,/href="([^"]+\.css[^"]*)"/]){
     const asset=home.text.match(pattern)?.[1];assert.ok(asset?.startsWith('/'));
-    assert.equal((await call(asset)).status,200);
+    const loaded=await call(asset);assert.equal(loaded.status,200);
+    if(asset.includes('.css')){
+      assert.doesNotMatch(loaded.text,/fonts\.googleapis\.com|fonts\.gstatic\.com/);
+      const fonts=[...loaded.text.matchAll(/url\(["']?(\/fonts\/[^)"']+\.woff2)["']?\)/g)];
+      assert.equal(fonts.length,6);
+      for(const font of fonts)assert.equal((await call(font[1])).status,200);
+    }
   }
   const pulse=await call('/api/pulse');assert.equal(pulse.status,200);
   assert.equal(typeof pulse.json.available,'boolean');
@@ -53,7 +59,7 @@ try{
   assert.equal((await call('/api/auth/session')).json.address,null);
   assert.equal((await call('/api/runs',{method:'POST',data:{action:'start'}})).status,401);
   const cross=await call('/api/auth/nonce',{method:'POST',data:{address:wallet.address},headers:{origin:'https://foreign.invalid'}});
-  assert.equal(cross.status,400);
+  assert.equal(cross.status,403);
   console.log('PASS: HTTPS, latest UI and LED logo, HTML/JS/CSS, live feed, event board, guest and origin protection');
 
   const nonce=await call('/api/auth/nonce',{method:'POST',data:{address:wallet.address}});

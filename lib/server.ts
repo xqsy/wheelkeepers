@@ -1,6 +1,7 @@
 import { env } from 'cloudflare:workers';
 import { cookies } from 'next/headers';
 import type { WheelEvent } from './game';
+import { assertClientOrigin, isExternalClient, sessionSecret, corsResponse } from './hosting.mjs';
 export function database() {
   if (!env.DB) throw new Error('Leaderboard storage is unavailable. Practice mode still works.');
   return env.DB;
@@ -8,18 +9,28 @@ export function database() {
 export async function digest(value: string) {
   return Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', new TextEncoder().encode(value))), n => n.toString(16).padStart(2, '0')).join('');
 }
-export async function identity() {
-  const token = (await cookies()).get('wk_session')?.value;
+export async function sessionToken(req: Request) {
+  if (isExternalClient(req)) {
+    const authorization = req.headers.get('authorization') || '';
+    return /^Bearer [a-f0-9-]{72}$/.test(authorization) ? authorization.slice(7) : undefined;
+  }
+  return (await cookies()).get('wk_session')?.value;
+}
+export async function identity(req: Request) {
+  const token = await sessionToken(req);
   if (!token) return null;
-  const row = await database().prepare('SELECT address FROM sessions WHERE token = ? AND expires > ?').bind(await digest(token), Date.now()).first<{address: string}>();
+  const row = await database().prepare('SELECT address FROM sessions WHERE token = ? AND expires > ?').bind(await digest(sessionSecret(req, token)), Date.now()).first<{address: string}>();
   return row?.address || null;
 }
 export function json(data: unknown, status = 200) {
   return Response.json(data, { status, headers: { 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff' } });
 }
 export function sameOrigin(req: Request) {
-  const origin = req.headers.get('origin');
-  if (origin && origin !== new URL(req.url).origin || req.headers.get('sec-fetch-site') === 'cross-site') throw new Error('Request origin is not allowed.');
+  assertClientOrigin(req);
+}
+export async function apiResponse(req: Request, handler: (req: Request) => Promise<Response>) {
+  try { sameOrigin(req); } catch { return corsResponse(req, json({ error: 'Request origin is not allowed.' }, 403)); }
+  return corsResponse(req, await handler(req));
 }
 export async function body(req: Request) {
   sameOrigin(req); const raw = await req.text();

@@ -9,10 +9,11 @@
     "install:ci": "node scripts/install-ci.mjs",
     "dev": "node scripts/run-framework.mjs dev",
     "build": "node scripts/run-framework.mjs build",
+    "export:static": "node scripts/export-static.mjs",
     "start": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js dev --config dist/server/wrangler.json --local --persist-to .wrangler/state --ip 127.0.0.1 --inspector-port 0",
     "lint": "eslint . --ignore-pattern dist --ignore-pattern .next",
     "typecheck": "tsc --noEmit",
-    "test": "node --experimental-strip-types --test tests/game.test.mjs tests/events.test.mjs tests/extension-errors.test.mjs tests/hamster.test.mjs",
+    "test": "node --experimental-strip-types --test tests/game.test.mjs tests/events.test.mjs tests/extension-errors.test.mjs tests/hamster.test.mjs tests/api-client.test.mjs tests/hosting.test.mjs",
     "db:migrate:local": "node --import ./scripts/sites-env.mjs ./node_modules/wrangler/bin/wrangler.js d1 migrations apply DB --local --config wrangler.local.jsonc --persist-to .wrangler/state",
     "db:generate": "drizzle-kit generate"
   },

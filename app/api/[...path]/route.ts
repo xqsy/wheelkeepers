@@ -1,20 +1,27 @@
 import { isAddress, verifyMessage } from 'viem';
-import { cookies } from 'next/headers';
-import { body, database, digest, identity, json, pulse, sameOrigin } from '@/lib/server';
+import { body, database, digest, identity, json, pulse, sameOrigin, sessionToken, apiResponse } from '@/lib/server';
+import { isExternalClient, signInOrigin, messageMatchesOrigin, sessionSecret, preflight } from '@/lib/hosting.mjs';
 import { createGame, replayChunk, verifyRunTiming, type Game, type BoostConfig } from '@/lib/game';
 import { findEvent, latestEvent, observeWheel } from '@/lib/events';
 export const dynamic = 'force-dynamic';
 const endpoint = (r: Request) => new URL(r.url).pathname.replace(/^\/api\//, '');
-export async function GET(req: Request) {
+export async function GET(req: Request) { return apiResponse(req, get); }
+export async function POST(req: Request) { return apiResponse(req, post); }
+export async function DELETE(req: Request) { return apiResponse(req, removeSession); }
+export async function OPTIONS(req: Request) { return preflight(req); }
+async function get(req: Request) {
   try {
     const path = endpoint(req);
     if (path === 'pulse') {
       const live = await pulse();
       return json({ ...live, event: await observeWheel(database(), live), serverNow: Date.now() });
     }
-    if (path === 'auth/session') return json({ address: await identity() });
+    if (path === 'auth/session') {
+      await database().prepare('SELECT 1 AS ready').first();
+      return json({ address: await identity(req), authMode: isExternalClient(req) ? 'bearer' : 'cookie' });
+    }
     if (path === 'leaderboard') {
-      const db = database(), address = await identity();
+      const db = database(), address = await identity(req);
       const eventId = new URL(req.url).searchParams.get('event');
       if (eventId) {
         if (eventId.length > 64) return json({ error: 'Invalid event.' }, 400);
@@ -33,16 +40,18 @@ export async function GET(req: Request) {
     return json({ error: 'Not found.' }, 404);
   } catch { return json({ error: 'Service temporarily unavailable.' }, 503); }
 }
-export async function DELETE(req: Request) {
+async function removeSession(req: Request) {
   try {
     sameOrigin(req);
     if (endpoint(req) !== 'auth/session') return json({ error: 'Not found.' }, 404);
-    const token = (await cookies()).get('wk_session')?.value;
-    if (token) await database().prepare('DELETE FROM sessions WHERE token = ?').bind(await digest(token)).run();
-    const r = json({ ok: true }); r.headers.set('Set-Cookie', 'wk_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0'); return r;
+    const token = await sessionToken(req);
+    if (token) await database().prepare('DELETE FROM sessions WHERE token = ?').bind(await digest(sessionSecret(req, token))).run();
+    const r = json({ ok: true });
+    if (!isExternalClient(req)) r.headers.set('Set-Cookie', `wk_session=; Path=/; HttpOnly; SameSite=Lax; Max-Age=0${new URL(req.url).protocol === 'https:' ? '; Secure' : ''}`);
+    return r;
   } catch { return json({ error: 'Could not sign out.' }, 400); }
 }
-export async function POST(req: Request) {
+async function post(req: Request) {
   try {
     const data = await body(req), path = endpoint(req), db = database(), now = Date.now();
     if (path === 'auth/nonce') {
@@ -51,7 +60,7 @@ export async function POST(req: Request) {
       const account = address.toLowerCase(), ip = await digest(req.headers.get('cf-connecting-ip') || 'local');
       const limit = await db.prepare('SELECT COUNT(*) AS n FROM nonces WHERE created > ? AND (address = ? OR ip = ?)').bind(now - 600000, account, ip).first<{n: number}>();
       if ((limit?.n || 0) >= 20) return json({ error: 'Too many sign-in attempts. Try again in 10 minutes.' }, 429);
-      const id = crypto.randomUUID(), expires = now + 300000, url = new URL(req.url);
+      const id = crypto.randomUUID(), expires = now + 300000, url = new URL(signInOrigin(req));
       const message = `${url.host} wants you to sign in with your Ethereum account:\n${address}\n\nSign in to Wheelkeepers to save your arcade scores. This message does not authorize a transaction or token access.\n\nURI: ${url.origin}\nVersion: 1\nChain ID: 1\nNonce: ${id.replaceAll('-', '')}\nIssued At: ${new Date(now).toISOString()}\nExpiration Time: ${new Date(expires).toISOString()}`;
       await db.prepare('INSERT INTO nonces (id,address,message,created,expires,ip) VALUES (?,?,?,?,?,?)').bind(id, account, message, now, expires, ip).run();
       await db.batch([
@@ -65,17 +74,18 @@ export async function POST(req: Request) {
       const { id, signature } = data;
       if (typeof id !== 'string' || typeof signature !== 'string' || !/^0x[0-9a-f]{130}$/i.test(signature)) return json({ error: 'Invalid signature.' }, 400);
       const nonce = await db.prepare('SELECT * FROM nonces WHERE id = ? AND used = 0 AND expires > ?').bind(id, now).first<{address: `0x${string}`; message: string}>();
-      if (!nonce || !await verifyMessage({ address: nonce.address, message: nonce.message, signature: signature as `0x${string}` })) return json({ error: 'Signature expired or does not match this wallet.' }, 401);
+      if (!nonce || !messageMatchesOrigin(nonce.message, signInOrigin(req)) || !await verifyMessage({ address: nonce.address, message: nonce.message, signature: signature as `0x${string}` })) return json({ error: 'Signature expired or does not match this wallet.' }, 401);
       const used = await db.prepare('UPDATE nonces SET used = 1 WHERE id = ? AND used = 0 AND expires > ?').bind(id, now).run();
       if (used.meta.changes !== 1) return json({ error: 'This sign-in message has already been used.' }, 401);
       const token = crypto.randomUUID() + crypto.randomUUID();
-      await db.prepare('INSERT INTO sessions (token,address,expires) VALUES (?,?,?)').bind(await digest(token), nonce.address, now + 604800000).run();
-      const response = json({ address: nonce.address });
-      response.headers.set('Set-Cookie', `wk_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${new URL(req.url).protocol === 'https:' ? '; Secure' : ''}`);
+      const external = isExternalClient(req);
+      await db.prepare('INSERT INTO sessions (token,address,expires) VALUES (?,?,?)').bind(await digest(sessionSecret(req, token)), nonce.address, now + (external ? 86400000 : 604800000)).run();
+      const response = json({ address: nonce.address, ...(external ? { token } : {}) });
+      if (!external) response.headers.set('Set-Cookie', `wk_session=${token}; Path=/; HttpOnly; SameSite=Lax; Max-Age=604800${new URL(req.url).protocol === 'https:' ? '; Secure' : ''}`);
       return response;
     }
     if (path !== 'runs') return json({ error: 'Not found.' }, 404);
-    const address = await identity();
+    const address = await identity(req);
     if (!address) return json({ error: 'Sign in with your wallet to play a ranked run.' }, 401);
     if (data.action === 'abandon') {
       if (typeof data.id !== 'string' || data.id.length > 64) return json({ error: 'Invalid run.' }, 400);

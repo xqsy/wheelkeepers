@@ -6,18 +6,20 @@ import { promisify } from 'node:util';
 import { fileURLToPath } from 'node:url';
 import { generatePrivateKey, privateKeyToAccount } from 'viem/accounts';
 import { createGame, tick, steerDirection, BOOST_STEPS, CHECKPOINT_STEPS } from '../lib/game.ts';
+import { STATIC_ORIGINS } from '../lib/hosting.mjs';
 
 const origin=new URL(process.env.WK_TEST_ORIGIN||'http://127.0.0.1:5173');
 if(!['127.0.0.1','localhost'].includes(origin.hostname))throw new Error('This integration check only runs against a local preview.');
 const root=fileURLToPath(new URL('../',import.meta.url)),execute=promisify(execFile);
 const account=privateKeyToAccount(generatePrivateKey()),address=account.address.toLowerCase();
-const eventId=`test-${crypto.randomUUID()}`,seed=2026;let cookie='';
+const eventId=`test-${crypto.randomUUID()}`,seed=2026;let cookie='',token='';
+const staticOrigin=process.env.WK_TEST_STATIC==='1'?STATIC_ORIGINS[0]:null;
 async function sql(command){
   await execute(process.execPath,['--import','./scripts/sites-env.mjs','./node_modules/wrangler/bin/wrangler.js',
     'd1','execute','DB','--local','--config','wrangler.local.jsonc','--persist-to','.wrangler/state','--command',command,'--json'],{cwd:root});
 }
 async function request(path,data){
-  const response=await fetch(new URL(`/api/${path}`,origin),{method:data?'POST':'GET',headers:{'content-type':'application/json',...(cookie?{cookie}:{})},body:data?JSON.stringify(data):undefined});
+  const response=await fetch(new URL(`/api/${path}`,origin),{method:data?'POST':'GET',headers:{'content-type':'application/json',...(cookie?{cookie}:{}),...(staticOrigin?{origin:staticOrigin}:{}),...(token?{authorization:`Bearer ${token}`}:{})},body:data?JSON.stringify(data):undefined});
   return {status:response.status,data:await response.json(),cookie:response.headers.get('set-cookie')};
 }
 try{
@@ -25,7 +27,8 @@ try{
   assert.equal((await request('runs',{action:'abandon',id:'missing'})).status,401);
   const nonce=await request('auth/nonce',{address:account.address});assert.equal(nonce.status,200);
   const signature=await account.signMessage({message:nonce.data.message});
-  const verified=await request('auth/verify',{id:nonce.data.id,signature});assert.equal(verified.status,200);cookie=verified.cookie.split(';')[0];
+  const verified=await request('auth/verify',{id:nonce.data.id,signature});assert.equal(verified.status,200);
+  if(staticOrigin){assert.equal(verified.cookie,null);token=verified.data.token;assert.ok(token);}else cookie=verified.cookie.split(';')[0];
   const now=Date.now();
   await sql(`INSERT INTO wheel_events (id,seed,rpm,opened_at,join_until) VALUES
     ('${eventId}',${seed},18,${now-1000},${now+90000}),

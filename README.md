@@ -42,6 +42,44 @@ npm run dev
 Open [localhost:5173](http://localhost:5173/).
 
 Local development uses a local database. The migrations do not connect to the deployed game's database. No production credentials are required.
+
+## Static hosting (imd.site / IPFS)
+
+A static pin contains the frontend, not the Worker or D1 database. Production
+clients on another origin explicitly use `https://wheelkeepers.dpdns.org/api/`.
+The canonical site and local development retain same-origin API requests.
+
+The Worker permits the exact published frontend origin listed in
+`lib/hosting.mjs`: `https://wheelkeepers-a-little-hamster-a.imd.site`.
+Add any replacement frontend origin there and redeploy the Worker before moving
+the frontend. Unrelated pins on shared IPFS gateways are intentionally not
+authorized; use a dedicated trusted hostname.
+
+External clients sign wallet messages for their own frontend domain. They use
+origin-bound bearer sessions kept in the current tab's sessionStorage, expiring
+after one day, without third-party cookies. The canonical site keeps HttpOnly,
+SameSite=Lax cookies. Both use the same server-verified scores and D1 leaderboard.
+The client checks the API before asking the wallet for account access and gives
+a readable service error if the API is unavailable.
+
+To prepare a static upload, build and start a production preview:
+
+```sh
+npm run build
+npm run start -- --port 8789
+```
+
+In another terminal, export to a new directory:
+
+```sh
+npm run export:static -- --preview-url http://127.0.0.1:8789 --out outputs/ipfs
+```
+
+Upload that directory's contents with `index.html` at the root. Keep the
+Cloudflare Worker online; the static frontend still needs it for live status,
+wallet authentication and leaderboards. Fonts and their licenses are included
+in `public/fonts/`, with no Google Fonts request on page load.
+
 ## Checks
 
 ```sh
@@ -51,6 +89,14 @@ npm run build
 ```
 
 With the local dev server running, `node --experimental-strip-types tests/boost-integration.mjs` verifies a full 75-second event run against local D1 and removes its disposable account and fixtures afterward.
+
+`node --experimental-strip-types tests/static-api-integration.mjs` checks a local
+production preview on port 8789 for external sign-in, preflight, cookie isolation
+and nonce replay protection. `WK_TEST_STATIC=1` also runs the full Boost integration
+through the external origin's bearer authentication; set `WK_TEST_ORIGIN` to the
+local server being tested. The fixed production API can be checked with
+`node --experimental-strip-types tests/static-api-integration.mjs --production`;
+it uses a disposable signing key, submits no scores, and revokes its sessions.
 
 ## About
 
