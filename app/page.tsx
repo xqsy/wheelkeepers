@@ -27,11 +27,11 @@ export default function Home() {
   const channel=useRef<RunChannel|null>(null),checkpointRef=useRef<(g:Game,finished:boolean)=>void>(()=>{});
   const exitRef=useRef<()=>void>(()=>{}),hitBuffer=useRef<AudioBuffer|null>(null);
   const [saving,setSaving]=useState(false);
-  const liveRef=useRef<Pulse|null>(null),providerRef=useRef<Provider|null>(null),finishRef=useRef<(g:Game)=>void>(()=>{}),soundRef=useRef(false),audio=useRef<AudioContext|null>(null);
+  const liveRef=useRef<Pulse|null>(null),providerRef=useRef<Provider|null>(null),finishRef=useRef<(g:Game)=>void>(()=>{}),soundRef=useRef(true),audio=useRef<AudioContext|null>(null);
   const [phase,setPhase]=useState<'ready'|'playing'|'finished'>('ready'),[hud,setHud]=useState(()=>gameHud(game.current));
   const [live,setLive]=useState<Pulse|null>(null),[address,setAddress]=useState<string|null>(null),[rows,setRows]=useState<Row[]>([]),[total,setTotal]=useState(0),[me,setMe]=useState<Row|null>(null);
   const [best,setBest]=useState(0),[busy,setBusy]=useState(false),[walletOpen,setWalletOpen]=useState(false),[wallets,setWallets]=useState<{name:string;provider:Provider}[]>([]);
-  const [toast,setToast]=useState(''),[saved,setSaved]=useState(''),[sound,setSound]=useState(false),[help,setHelp]=useState(false),[boardError,setBoardError]=useState(false);
+  const [toast,setToast]=useState(''),[saved,setSaved]=useState(''),[sound,setSound]=useState(true),[help,setHelp]=useState(false),[boardError,setBoardError]=useState(false);
   const [boostBest,setBoostBest]=useState(0),[clock,setClock]=useState(0),serverOffset=useRef(0);
   const [boardMode,setBoardMode]=useState<'arcade'|'boost'>('arcade'),[boardEvent,setBoardEvent]=useState<WheelEvent|null>(null),[boardLoading,setBoardLoading]=useState(true);
   const boardSelection=useRef<{mode:'arcade'|'boost';eventId:string|null}>({mode:'arcade',eventId:null});
@@ -104,7 +104,10 @@ export default function Home() {
   }
   function toggleSound(){
     const enabled=!soundRef.current;soundRef.current=enabled;setSound(enabled);
-    if(enabled)try{audio.current||=new AudioContext();audio.current.resume().catch(()=>{});}catch{soundRef.current=false;setSound(false);}
+    if(enabled&&!resumeAudio()){soundRef.current=false;setSound(false);}
+  }
+  function resumeAudio(){
+    try{audio.current||=new AudioContext();audio.current.resume().catch(()=>{});return true;}catch{return false;}
   }
   checkpointRef.current=(g,finished)=>{
     const active=channel.current;
@@ -171,6 +174,8 @@ export default function Home() {
   },[address,note]);
   async function start(practice=false,boostMode=false,demo=false){
     if(playing.current||busy||saving)return;setBusy(true);setSaved('');
+    // Unlock audio during the Play gesture, before a ranked request can delay it.
+    if(soundRef.current)resumeAudio();
     try{let seed=live?.seed||Math.floor(Date.now()/86400000),id=null,boost:BoostConfig|undefined;
       if(boostMode){
         const event=liveRef.current?.event;
@@ -181,7 +186,6 @@ export default function Home() {
       if(address&&!practice){const r=await api('runs',{action:'start',mode:boostMode?'boost':'arcade',eventId:boost?.eventId});seed=r.seed;id=r.id;boost=r.boost||undefined;}
       game.current=createGame(seed,boost);moves.current=[];pointer.current=null;runId.current=id;channel.current=id?{id,sequence:0,cursor:0,queue:Promise.resolve(),failed:false,error:''}:null;setHud(gameHud(game.current));setPhase('playing');playing.current=true;
       if(boost)chooseBoard('boost',boost.eventId);
-      if(soundRef.current){audio.current||=new AudioContext();audio.current.resume().catch(()=>{});}
       if(window.innerWidth<760)document.querySelector('#arcade')?.scrollIntoView({behavior:'smooth',block:'start'});
     }catch(e){note((e as Error).message);}finally{setBusy(false);}
   }
